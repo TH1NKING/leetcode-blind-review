@@ -1,0 +1,3 @@
+# Use a minimal Chrome extension for the first version
+
+Blind Review Mode will ship first as a minimal Manifest V3 Chrome extension rather than a Tampermonkey UserScript. Extension CSS can protect the viewport before the page DOM is constructed or displayed, whereas Tampermonkey's default Chrome Manifest V3 execution mode does not provide true `document-start` injection. The additional packaging cost is justified because preventing old-code exposure takes priority over UserScript convenience. A minimal background coordinator is required for the browser-wide mode, dynamic activation, toolbar commands, and atomic cross-tab ownership; unrelated background capabilities remain out of scope.
