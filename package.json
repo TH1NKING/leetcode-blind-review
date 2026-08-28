@@ -1,0 +1,27 @@
+{
+  "name": "leetcode-blind-review",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "packageManager": "npm@10.9.2",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test:lifecycle": "vitest run tests/lifecycle",
+    "test:artifact": "npm run build && vitest run tests/artifact",
+    "test:blackbox": "npm run build && vitest run tests/black-box --maxWorkers=1",
+    "test": "npm run typecheck && npm run build && vitest run --maxWorkers=1",
+    "verify": "npm test"
+  },
+  "devDependencies": {
+    "@types/chrome": "0.2.7",
+    "@types/node": "22.20.1",
+    "esbuild": "0.28.2",
+    "puppeteer-core": "25.9.0",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11"
+  }
+}
