@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "LeetCode Blind Review",
+  "version": "0.1.0",
+  "description": "Start supported LeetCode practice problems without revealing saved code.",
+  "minimum_chrome_version": "102",
+  "incognito": "not_allowed",
+  "permissions": ["storage", "scripting"],
+  "host_permissions": ["https://leetcode.cn/problems/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}
