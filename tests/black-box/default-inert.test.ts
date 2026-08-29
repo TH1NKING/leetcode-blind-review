@@ -66,7 +66,7 @@ it("installs in Chrome Stable and remains inert while Blind Mode is off", async 
         bodyTags: ["MAIN", "SCRIPT"],
         canaryText: "OLD_CODE_CANARY",
         fixtureEvents: [],
-        headTags: ["META", "TITLE"],
+        headTags: ["META", "TITLE", "STYLE"],
         hitTargetId: "old-code-canary",
       });
       expect(fixture.unexpectedRequests).toEqual([]);

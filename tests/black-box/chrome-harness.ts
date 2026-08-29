@@ -1,4 +1,4 @@
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, cp, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -9,10 +9,15 @@ import puppeteer, {
   type WebWorker,
 } from "puppeteer-core";
 
-import { LEETCODE_FIXTURE_HTML } from "./leetcode-fixture.js";
+import { createLeetCodeFixtureHtml } from "./leetcode-fixture.js";
 
 const EXTENSION_DIRECTORY = path.resolve("dist/extension");
+const PACKAGE_PREFIX = "leetcode-blind-review-package-";
 const PROFILE_PREFIX = "leetcode-blind-review-";
+
+export interface ChromeHarnessOptions {
+  readonly omitExtensionFiles?: readonly string[];
+}
 
 export interface ExtensionStorageSnapshot {
   readonly local: Record<string, unknown>;
@@ -22,6 +27,13 @@ export interface ExtensionStorageSnapshot {
 export interface FixturePage {
   readonly page: Page;
   readonly unexpectedRequests: readonly string[];
+  stopScreencast(): Promise<readonly string[]>;
+}
+
+export interface FixtureOptions {
+  readonly captureScreencast?: boolean;
+  readonly openInBackground?: boolean;
+  readonly workspaceCount?: number;
 }
 
 export interface RunningChrome {
@@ -32,7 +44,14 @@ export interface RunningChrome {
   };
   close(): Promise<void>;
   getServiceWorkerRequests(): readonly string[];
-  openFixture(url: string): Promise<FixturePage>;
+  openPopup(): Promise<Page>;
+  openFixture(url: string, options?: FixtureOptions): Promise<FixturePage>;
+  readRegisteredContentScripts(): Promise<
+    readonly chrome.scripting.RegisteredContentScript[]
+  >;
+  replaceRegisteredContentScript(
+    script: chrome.scripting.RegisteredContentScript,
+  ): Promise<void>;
   readExtensionStorage(): Promise<ExtensionStorageSnapshot>;
   writeExtensionStorage(
     local: Record<string, unknown>,
@@ -69,16 +88,16 @@ async function resolveChromeStablePath(): Promise<string> {
   );
 }
 
-function assertTemporaryProfilePath(profileDirectory: string): void {
-  const relativePath = path.relative(path.resolve(tmpdir()), profileDirectory);
+function assertTemporaryPath(directory: string, prefix: string): void {
+  const relativePath = path.relative(path.resolve(tmpdir()), directory);
 
   if (
     relativePath.length === 0 ||
     relativePath.startsWith("..") ||
     path.isAbsolute(relativePath) ||
-    !path.basename(profileDirectory).startsWith(PROFILE_PREFIX)
+    !path.basename(directory).startsWith(prefix)
   ) {
-    throw new Error("Refusing to remove a profile outside the test temp root");
+    throw new Error("Refusing to remove a directory outside the test temp root");
   }
 }
 
@@ -103,10 +122,23 @@ async function waitForExtensionWorker(
   };
 }
 
-export async function createChromeHarness(): Promise<ChromeHarness> {
+export async function createChromeHarness(
+  options: ChromeHarnessOptions = {},
+): Promise<ChromeHarness> {
   const profileDirectory = await mkdtemp(
     path.join(path.resolve(tmpdir()), PROFILE_PREFIX),
   );
+  const packageDirectory = await mkdtemp(
+    path.join(path.resolve(tmpdir()), PACKAGE_PREFIX),
+  );
+  const packagedExtensionDirectory = path.join(packageDirectory, "extension");
+  await cp(EXTENSION_DIRECTORY, packagedExtensionDirectory, { recursive: true });
+  for (const file of options.omitExtensionFiles ?? []) {
+    if (path.basename(file) !== file) {
+      throw new Error("Extension omission must name one package-root file");
+    }
+    await rm(path.join(packagedExtensionDirectory, file), { force: true });
+  }
   const chromePath = await resolveChromeStablePath();
   let activeBrowser: Browser | undefined;
 
@@ -126,7 +158,9 @@ export async function createChromeHarness(): Promise<ChromeHarness> {
       });
       activeBrowser = browser;
 
-      const extensionId = await browser.installExtension(EXTENSION_DIRECTORY);
+      const extensionId = await browser.installExtension(
+        packagedExtensionDirectory,
+      );
       const extension = (await browser.extensions()).get(extensionId);
 
       if (!extension || !extension.enabled) {
@@ -160,16 +194,59 @@ export async function createChromeHarness(): Promise<ChromeHarness> {
         getServiceWorkerRequests(): readonly string[] {
           return [...serviceWorkerRequests];
         },
-        async openFixture(url: string): Promise<FixturePage> {
+        async openPopup(): Promise<Page> {
           const page = await browser.newPage();
+          await page.goto(`chrome-extension://${extensionId}/popup.html`);
+          return page;
+        },
+        async openFixture(
+          url: string,
+          options: FixtureOptions = {},
+        ): Promise<FixturePage> {
+          const page = await browser.newPage();
+          if (options.openInBackground) {
+            await browser.newPage();
+          }
           const unexpectedRequests: string[] = [];
+          const screencastFrames: string[] = [];
+          const screencastSession = options.captureScreencast
+            ? await page.createCDPSession()
+            : undefined;
+          let resolveFirstScreencastFrame: (() => void) | undefined;
+          const firstScreencastFrame = screencastSession
+            ? new Promise<void>((resolve) => {
+                resolveFirstScreencastFrame = resolve;
+              })
+            : undefined;
+          let screencastRunning = false;
+
+          if (screencastSession) {
+            await screencastSession.send("Page.enable");
+            screencastSession.on(
+              "Page.screencastFrame",
+              ({ data, sessionId }) => {
+                screencastFrames.push(data);
+                resolveFirstScreencastFrame?.();
+                resolveFirstScreencastFrame = undefined;
+                void screencastSession.send("Page.screencastFrameAck", {
+                  sessionId,
+                });
+              },
+            );
+            await screencastSession.send("Page.startScreencast", {
+              everyNthFrame: 1,
+              format: "png",
+              quality: 100,
+            });
+            screencastRunning = true;
+          }
           await page.setRequestInterception(true);
           page.on("request", (request) => {
             const requestUrl = request.url();
 
             if (requestUrl.startsWith("https://leetcode.cn/")) {
               void request.respond({
-                body: LEETCODE_FIXTURE_HTML,
+                body: createLeetCodeFixtureHtml(options.workspaceCount ?? 1),
                 contentType: "text/html; charset=utf-8",
                 status: 200,
               });
@@ -186,7 +263,64 @@ export async function createChromeHarness(): Promise<ChromeHarness> {
           });
           await page.goto(url, { waitUntil: "domcontentloaded" });
 
-          return { page, unexpectedRequests };
+          return {
+            page,
+            unexpectedRequests,
+            async stopScreencast(): Promise<readonly string[]> {
+              if (screencastSession && screencastRunning) {
+                await page.evaluate(
+                  () =>
+                    new Promise<void>((resolve) => {
+                      requestAnimationFrame(() => resolve());
+                    }),
+                );
+                if (firstScreencastFrame && screencastFrames.length === 0) {
+                  let deliveryDeadline: ReturnType<typeof setTimeout> | undefined;
+                  try {
+                    await Promise.race([
+                      firstScreencastFrame,
+                      new Promise<never>((_resolve, reject) => {
+                        deliveryDeadline = setTimeout(
+                          () => reject(new Error("Chrome did not deliver a screencast frame")),
+                          2_000,
+                        );
+                      }),
+                    ]);
+                  } finally {
+                    if (deliveryDeadline) {
+                      clearTimeout(deliveryDeadline);
+                    }
+                  }
+                }
+                await screencastSession.send("Page.stopScreencast");
+                screencastRunning = false;
+              }
+              return [...screencastFrames];
+            },
+          };
+        },
+        async readRegisteredContentScripts(): Promise<
+          readonly chrome.scripting.RegisteredContentScript[]
+        > {
+          return worker.evaluate(() =>
+            chrome.scripting.getRegisteredContentScripts(),
+          );
+        },
+        async replaceRegisteredContentScript(
+          script: chrome.scripting.RegisteredContentScript,
+        ): Promise<void> {
+          await worker.evaluate(async (replacement) => {
+            const registered =
+              await chrome.scripting.getRegisteredContentScripts({
+                ids: [replacement.id],
+              });
+            if (registered.length > 0) {
+              await chrome.scripting.unregisterContentScripts({
+                ids: [replacement.id],
+              });
+            }
+            await chrome.scripting.registerContentScripts([replacement]);
+          }, script);
         },
         async readExtensionStorage(): Promise<ExtensionStorageSnapshot> {
           return worker.evaluate(async () => ({
@@ -215,8 +349,15 @@ export async function createChromeHarness(): Promise<ChromeHarness> {
         activeBrowser = undefined;
       }
 
-      assertTemporaryProfilePath(profileDirectory);
+      assertTemporaryPath(profileDirectory, PROFILE_PREFIX);
       await rm(profileDirectory, {
+        force: true,
+        maxRetries: 3,
+        recursive: true,
+        retryDelay: 100,
+      });
+      assertTemporaryPath(packageDirectory, PACKAGE_PREFIX);
+      await rm(packageDirectory, {
         force: true,
         maxRetries: 3,
         recursive: true,
