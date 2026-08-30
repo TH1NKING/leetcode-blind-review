@@ -5,18 +5,33 @@ import { describe, expect, it } from "vitest";
 
 const RELEASE_DIRECTORY = path.resolve("dist/extension");
 
-describe("release package", () => {
-  it("contains only the approved inert MV3 surface", async () => {
-    const files = (await readdir(RELEASE_DIRECTORY)).sort();
-    const manifest = JSON.parse(
-      await readFile(path.join(RELEASE_DIRECTORY, "manifest.json"), "utf8"),
-    ) as unknown;
-    const background = await readFile(
-      path.join(RELEASE_DIRECTORY, "background.js"),
-      "utf8",
-    );
+async function readReleaseFile(file: string): Promise<string> {
+  return readFile(path.join(RELEASE_DIRECTORY, file), "utf8");
+}
 
-    expect(files).toEqual(["background.js", "manifest.json"]);
+describe("release package", () => {
+  it("contains only the approved non-destructive Ticket 03 surface", async () => {
+    const files = (await readdir(RELEASE_DIRECTORY)).sort();
+    const manifest = JSON.parse(await readReleaseFile("manifest.json")) as unknown;
+    const [background, controller, popup, popupHtml, guardCss] =
+      await Promise.all([
+        readReleaseFile("background.js"),
+        readReleaseFile("controller.js"),
+        readReleaseFile("popup.js"),
+        readReleaseFile("popup.html"),
+        readReleaseFile("guard.css"),
+      ]);
+    const scripts = [background, controller, popup].join("\n");
+
+    expect(files).toEqual([
+      "background.js",
+      "controller.js",
+      "guard.css",
+      "manifest.json",
+      "popup.css",
+      "popup.html",
+      "popup.js",
+    ]);
     expect(manifest).toEqual({
       manifest_version: 3,
       name: "LeetCode Blind Review",
@@ -31,15 +46,26 @@ describe("release package", () => {
         service_worker: "background.js",
         type: "module",
       },
+      action: {
+        default_popup: "popup.html",
+      },
       content_security_policy: {
         extension_pages: "script-src 'self'; object-src 'self'",
       },
     });
-    expect(background).not.toMatch(
+    expect(scripts).not.toMatch(
       /\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)\b/u,
     );
-    expect(background).not.toMatch(
-      /(?:__TEST__|testMode|CANARY|innerHTML|textContent|\.value\b|monaco|codemirror)/iu,
+    expect(scripts).not.toMatch(
+      /(?:__TEST__|testMode|CANARY|fixture|monaco|codemirror)/iu,
     );
+    expect(controller).not.toMatch(
+      /(?:\.click\s*\(|dispatchEvent\s*\(|new\s+(?:MouseEvent|PointerEvent)|localStorage|indexedDB)/u,
+    );
+    expect(controller.replaceAll("event.value", "")).not.toMatch(
+      /(?:innerHTML|outerHTML|textContent|\.value\b|selection|clipboard)/iu,
+    );
+    expect(popupHtml).not.toMatch(/<script(?!\s+src=)/iu);
+    expect(guardCss).not.toMatch(/url\s*\(/iu);
   });
 });

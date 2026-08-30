@@ -1,0 +1,49 @@
+html:not([data-lbr-guard-neutralized]):not([data-lbr-guard-mounted])::before {
+  background: #111827;
+  content: "";
+  inset: 0;
+  pointer-events: auto;
+  position: fixed;
+  z-index: 2147483647;
+}
+
+#lbr-editor-guard {
+  align-items: center;
+  background: #111827;
+  box-sizing: border-box;
+  color: #f9fafb;
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  overflow: hidden;
+  padding: 24px;
+  pointer-events: auto;
+  position: fixed;
+  z-index: 2147483647;
+}
+
+#lbr-editor-guard [data-lbr-guard-panel] {
+  background: #1f2937;
+  border: 1px solid #4b5563;
+  border-radius: 8px;
+  box-sizing: border-box;
+  max-width: 420px;
+  padding: 20px;
+  text-align: center;
+}
+
+#lbr-editor-guard h2 {
+  font-size: 18px;
+  margin: 0 0 12px;
+}
+
+#lbr-editor-guard [data-lbr-guard-actions] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+#lbr-editor-guard button {
+  min-height: 36px;
+}
