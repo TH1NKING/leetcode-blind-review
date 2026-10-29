@@ -355,18 +355,21 @@ class DocumentController {
     }
 
     const bounds = this.#workspace.getBoundingClientRect();
-    if (!this.#workspace.isConnected || bounds.width <= 0 || bounds.height <= 0) {
-      // A detached or hidden boundary cannot safely locate the current surface.
-      this.#guard.style.inset = "0";
-      this.#guard.style.width = "";
-      this.#guard.style.height = "";
-      return;
+    // A detached or hidden boundary cannot safely locate the current surface.
+    const useViewport = !this.#workspace.isConnected || bounds.width <= 0 || bounds.height <= 0;
+    const placement = {
+      left: useViewport ? "0px" : `${bounds.left}px`,
+      top: useViewport ? "0px" : `${bounds.top}px`,
+      right: useViewport ? "0px" : "auto",
+      bottom: useViewport ? "0px" : "auto",
+      width: useViewport ? "" : `${bounds.width}px`,
+      height: useViewport ? "" : `${bounds.height}px`,
+    };
+    for (const [property, cssValue] of Object.entries(placement)) {
+      if (this.#guard.style.getPropertyValue(property) !== cssValue) {
+        this.#guard.style.setProperty(property, cssValue);
+      }
     }
-    this.#guard.style.inset = "auto";
-    this.#guard.style.left = `${bounds.left}px`;
-    this.#guard.style.top = `${bounds.top}px`;
-    this.#guard.style.width = `${bounds.width}px`;
-    this.#guard.style.height = `${bounds.height}px`;
   };
 
   #trackWorkspaceGuard = (): void => {

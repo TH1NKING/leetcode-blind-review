@@ -66,3 +66,8 @@ The black-box runner uses the standard Windows Chrome path by default. Set `CHRO
 - Non-destructive: no visible-Reset adapter or executor, no `.click()` automation, no private API, and no browser-draft or Editor write path.
 
 Full route semantics, SPA/language generation changes, foreground activity budgeting, Attempt Ownership, Recovery Entry, a versioned real-site Reset contract, production Reset execution, diagnostics, and the complete accessibility/release matrices remain assigned to later tickets.
+
+## Code review
+
+- [2026-10-29 review, reproductions, fixes, and remaining gaps](docs/reviews/2026-10-29-code-review.md)
+- [Current architecture and code-grounded interview preparation](docs/reviews/2026-10-29-architecture-and-interview.md)
