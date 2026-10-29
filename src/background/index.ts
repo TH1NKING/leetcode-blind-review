@@ -93,14 +93,30 @@ async function readConfiguration(): Promise<PersistentConfiguration> {
   const stored = await chrome.storage.local.get(PERSISTENT_CONFIGURATION_KEY);
   const configuration = stored[PERSISTENT_CONFIGURATION_KEY];
 
-  if (!configuration) {
+  if (
+    typeof configuration !== "object" ||
+    configuration === null ||
+    !("schemaVersion" in configuration) ||
+    configuration.schemaVersion !== 1 ||
+    !("blindMode" in configuration) ||
+    typeof configuration.blindMode !== "string" ||
+    !["off", "enabling", "on", "disabling"].includes(configuration.blindMode) ||
+    !("countdownMs" in configuration) ||
+    typeof configuration.countdownMs !== "number" ||
+    !Number.isFinite(configuration.countdownMs) ||
+    configuration.countdownMs < 0
+  ) {
     await chrome.storage.local.set({
       [PERSISTENT_CONFIGURATION_KEY]: DEFAULT_PERSISTENT_CONFIGURATION,
     });
     return DEFAULT_PERSISTENT_CONFIGURATION;
   }
 
-  return configuration as PersistentConfiguration;
+  return {
+    schemaVersion: 1,
+    blindMode: configuration.blindMode as PersistentConfiguration["blindMode"],
+    countdownMs: configuration.countdownMs,
+  };
 }
 
 async function persistBlindMode(
@@ -199,9 +215,23 @@ async function sendPracticeViewMessage(
   type: "prevent-new-work" | "neutralize-guarded-runtime",
 ): Promise<void> {
   try {
-    await chrome.tabs.sendMessage(tabId, { type });
-  } catch {
-    // The Document may already have left the supported Practice View.
+    const response: unknown = await chrome.tabs.sendMessage(tabId, { type });
+    const acknowledgement = type === "prevent-new-work" ? "stopped" : "neutralized";
+    if (
+      typeof response !== "object" || response === null ||
+      !(acknowledgement in response) ||
+      (response as Record<string, unknown>)[acknowledgement] !== true
+    ) {
+      throw new Error("The Document did not acknowledge Blind Mode cleanup");
+    }
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      /Receiving end does not exist|No tab with id|The tab was closed|The frame was removed|No frame with id/u.test(error.message)
+    ) {
+      return;
+    }
+    throw error;
   }
 }
 
@@ -217,34 +247,64 @@ async function removeImmediateGuardCss(tabId: number): Promise<void> {
   }
 }
 
-async function practiceTabIds(): Promise<readonly number[]> {
-  const tabs = await chrome.tabs.query({ url: [PRACTICE_MATCH] });
+async function openTabIds(): Promise<readonly number[]> {
+  // An injected controller survives same-Document navigation outside its match.
+  // Tab IDs need no broad tabs permission, and messages reach only this extension.
+  const tabs = await chrome.tabs.query({});
   return tabs.flatMap(({ id }) => (typeof id === "number" ? [id] : []));
 }
 
 async function preventNewWorkInPracticeViews(): Promise<void> {
-  const tabIds = await practiceTabIds();
+  const tabIds = await openTabIds();
   await Promise.all(
     tabIds.map((tabId) => sendPracticeViewMessage(tabId, "prevent-new-work")),
   );
 }
 
 async function neutralizePracticeView(tabId: number): Promise<void> {
-  await sendPracticeViewMessage(tabId, "neutralize-guarded-runtime");
-  await removeImmediateGuardCss(tabId);
+  try {
+    await sendPracticeViewMessage(tabId, "neutralize-guarded-runtime");
+  } finally {
+    await removeImmediateGuardCss(tabId);
+  }
 }
 
 async function neutralizeAllPracticeViews(): Promise<void> {
-  const tabIds = await practiceTabIds();
+  const tabIds = await openTabIds();
   await Promise.all(tabIds.map((tabId) => neutralizePracticeView(tabId)));
 }
 
-async function rollbackToOff(): Promise<void> {
+async function settleRuntimeToOff(): Promise<PersistentConfiguration> {
+  workflowGate = "disabling";
+  let cleanupFailed = false;
+  const steps: readonly (() => Promise<unknown>)[] = [
+    preventNewWorkInPracticeViews,
+    () => persistBlindMode("disabling"),
+    uninstallGuardedRuntime,
+    neutralizeAllPracticeViews,
+    () => chrome.storage.session.clear(),
+  ];
+
+  for (const step of steps) {
+    try {
+      await step();
+    } catch {
+      // One failed API call must not prevent independent cleanup steps.
+      cleanupFailed = true;
+    }
+  }
+
+  if (cleanupFailed) {
+    throw new Error("Blind Mode cleanup is incomplete; disabling can be retried");
+  }
+
+  const configuration = await persistBlindMode("off");
   workflowGate = "off";
-  await uninstallGuardedRuntime();
-  await neutralizeAllPracticeViews();
-  await chrome.storage.session.clear();
-  await persistBlindMode("off");
+  return configuration;
+}
+
+async function rollbackToOff(): Promise<void> {
+  await settleRuntimeToOff();
 }
 
 async function reconcileRuntime(): Promise<void> {
@@ -271,8 +331,14 @@ async function reconcileRuntime(): Promise<void> {
   }
 
   workflowGate = "off";
-  await uninstallGuardedRuntime();
-  await neutralizeAllPracticeViews();
+  const cleanup = await Promise.allSettled([
+    uninstallGuardedRuntime(),
+    neutralizeAllPracticeViews(),
+    chrome.storage.session.clear(),
+  ]);
+  if (cleanup.some((result) => result.status === "rejected")) {
+    throw new Error("Blind Mode off reconciliation is incomplete");
+  }
 }
 
 async function initializeExtension(): Promise<void> {
@@ -284,11 +350,14 @@ async function initializeExtension(): Promise<void> {
 }
 
 function startInitialization(): Promise<void> {
-  initialization ??= initializeExtension();
-  void initialization.catch((error: unknown) => {
+  const attempt = (initialization ??= initializeExtension());
+  void attempt.catch((error: unknown) => {
+    if (initialization === attempt) {
+      initialization = undefined;
+    }
     console.error("Blind Mode initialization failed", error);
   });
-  return initialization;
+  return attempt;
 }
 
 function enqueueModeMutation<T>(mutation: () => Promise<T>): Promise<T> {
@@ -331,15 +400,7 @@ async function disableBlindMode(): Promise<PersistentConfiguration> {
     return current;
   }
 
-  workflowGate = "disabling";
-  await preventNewWorkInPracticeViews();
-  await persistBlindMode("disabling");
-  await uninstallGuardedRuntime();
-  await neutralizeAllPracticeViews();
-  await chrome.storage.session.clear();
-  const configuration = await persistBlindMode("off");
-  workflowGate = "off";
-  return configuration;
+  return settleRuntimeToOff();
 }
 
 async function senderIsForeground(
@@ -363,17 +424,17 @@ async function handleModeMessage(
   message: ModeMessage,
   sender: chrome.runtime.MessageSender,
 ): Promise<ModeResponse> {
-  await startInitialization();
-
-  if (message.type === "get-blind-mode-status") {
-    return {
-      ok: true,
-      blindMode: workflowGate,
-      foregroundEligible: await senderIsForeground(sender),
-    };
-  }
-
   try {
+    await startInitialization();
+
+    if (message.type === "get-blind-mode-status") {
+      return {
+        ok: true,
+        blindMode: workflowGate,
+        foregroundEligible: await senderIsForeground(sender),
+      };
+    }
+
     const configuration = await enqueueModeMutation(() =>
       message.enabled ? enableBlindMode() : disableBlindMode(),
     );

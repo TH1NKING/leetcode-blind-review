@@ -70,6 +70,7 @@ it("restores viewport protection when the guarded Workspace is replaced", async 
       const replacement = workspace.cloneNode(true) as HTMLElement;
       replacement.inert = false;
       replacement.removeAttribute("aria-hidden");
+      replacement.style.removeProperty("opacity");
       workspace.replaceWith(replacement);
     });
     await settleLayout(page);
@@ -206,7 +207,8 @@ it("fails closed for an unsupported configuration schema on restart", async () =
   const harness = await createChromeHarness();
   try {
     let chrome = await harness.launch();
-    await chrome.openPopup();
+    const popup = await chrome.openPopup();
+    await popup.waitForSelector("button:not([disabled])");
     await chrome.writeExtensionStorage({
       persistentConfiguration: { schemaVersion: 99, blindMode: "on", countdownMs: 5_000 },
     }, {});
@@ -216,6 +218,45 @@ it("fails closed for an unsupported configuration schema on restart", async () =
       local: { persistentConfiguration: { schemaVersion: 1, blindMode: "off", countdownMs: 5_000 } },
     });
     expect(await chrome.readRegisteredContentScripts()).toEqual([]);
+  } finally {
+    await harness.dispose();
+  }
+});
+
+it("does not publish off when controller neutralization was not acknowledged", async () => {
+  const harness = await createChromeHarness();
+  try {
+    const chrome = await harness.launch();
+    await enable(chrome);
+    const { page } = await chrome.openFixture(PRACTICE_URL);
+    await page.waitForSelector(`${GUARD}[data-phase="countdown"]`);
+    const popup = await chrome.openPopup();
+    await popup.waitForSelector('button[aria-label="关闭 Blind Mode"]:not([disabled])');
+    const worker = await extensionWorker(popup);
+    await worker.evaluate(() => {
+      const original = globalThis.chrome.tabs.sendMessage;
+      Object.defineProperty(globalThis.chrome.tabs, "sendMessage", {
+        configurable: true,
+        value: (...args: unknown[]) => {
+          const message = args[1] as { type?: string } | undefined;
+          if (message?.type === "neutralize-guarded-runtime") {
+            Object.defineProperty(globalThis.chrome.tabs, "sendMessage", { configurable: true, value: original });
+            return Promise.reject(new Error("Synthetic message delivery failure"));
+          }
+          return Reflect.apply(original, globalThis.chrome.tabs, args);
+        },
+      });
+    });
+    await popup.click("button");
+    await popup.waitForSelector('button[aria-label="关闭 Blind Mode"]:not([disabled])');
+    expect(await chrome.readExtensionStorage()).toMatchObject({
+      local: { persistentConfiguration: { blindMode: "disabling" } },
+    });
+    await popup.click("button");
+    await expect.poll(() => chrome.readExtensionStorage()).toMatchObject({
+      local: { persistentConfiguration: { blindMode: "off" } },
+    });
+    expect(await page.$(GUARD)).toBeNull();
   } finally {
     await harness.dispose();
   }

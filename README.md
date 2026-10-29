@@ -10,7 +10,7 @@ This build deliberately has no production Reset executor. Pressing Enter, choosi
 
 - Node.js 22.12 or later
 - npm 10
-- Google Chrome Stable
+- Google Chrome Stable (minimum API compatibility: Chrome 119)
 
 ## Build and install
 

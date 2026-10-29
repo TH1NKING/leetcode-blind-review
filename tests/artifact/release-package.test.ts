@@ -38,7 +38,7 @@ describe("release package", () => {
       version: "0.1.0",
       description:
         "Start supported LeetCode practice problems without revealing saved code.",
-      minimum_chrome_version: "102",
+      minimum_chrome_version: "119",
       incognito: "not_allowed",
       permissions: ["storage", "scripting"],
       host_permissions: ["https://leetcode.cn/problems/*"],
