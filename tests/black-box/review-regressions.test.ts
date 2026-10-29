@@ -281,3 +281,36 @@ it("serializes competing Blind Mode commands without leaving a registration or G
     await harness.dispose();
   }
 });
+
+it("still cancels and cleans the page when a configuration read fails during disabling", async () => {
+  const harness = await createChromeHarness();
+  try {
+    const chrome = await harness.launch();
+    await enable(chrome);
+    const { page } = await chrome.openFixture(PRACTICE_URL);
+    await page.waitForSelector(`${GUARD}[data-phase="countdown"]`);
+    const popup = await chrome.openPopup();
+    await popup.waitForSelector('button[aria-label="关闭 Blind Mode"]:not([disabled])');
+    const worker = await extensionWorker(popup);
+    await worker.evaluate(() => {
+      const original = globalThis.chrome.storage.local.get;
+      Object.defineProperty(globalThis.chrome.storage.local, "get", {
+        configurable: true,
+        value: () => {
+          Object.defineProperty(globalThis.chrome.storage.local, "get", { configurable: true, value: original });
+          return Promise.reject(new Error("Synthetic configuration read failure"));
+        },
+      });
+    });
+    await popup.click("button");
+    await popup.waitForSelector('button[aria-label="关闭 Blind Mode"]:not([disabled])');
+    expect(await page.$(GUARD)).toBeNull();
+    expect(await chrome.readRegisteredContentScripts()).toEqual([]);
+    await popup.click("button");
+    await expect.poll(() => chrome.readExtensionStorage()).toMatchObject({
+      local: { persistentConfiguration: { blindMode: "off" } }, session: {},
+    });
+  } finally {
+    await harness.dispose();
+  }
+});

@@ -13,6 +13,7 @@ it("installs in Chrome Stable and remains inert while Blind Mode is off", async 
 
   try {
     let chrome = await harness.launch();
+    console.info(`Chrome black-box environment: ${chrome.browserVersion}; extension ${chrome.extensionMetadata.version}`);
 
     expect(chrome.browserVersion).toMatch(/^Chrome\/\d+/u);
     expect(chrome.extensionMetadata).toEqual({

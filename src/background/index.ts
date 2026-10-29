@@ -394,12 +394,7 @@ async function enableBlindMode(): Promise<PersistentConfiguration> {
 }
 
 async function disableBlindMode(): Promise<PersistentConfiguration> {
-  const current = await readConfiguration();
-
-  if (current.blindMode === "off" && workflowGate === "off") {
-    return current;
-  }
-
+  // Cancellation and page cleanup must not depend on a successful storage read.
   return settleRuntimeToOff();
 }
 
