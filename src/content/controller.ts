@@ -49,9 +49,12 @@ class DocumentController {
   #attemptAbort = new AbortController();
   #guardAbort = new AbortController();
   #countdownTimer: number | undefined;
+  #guardAnimationFrame: number | undefined;
   #workspace: HTMLElement | undefined;
   #workspaceAriaHidden: string | null = null;
   #workspaceWasInert = false;
+  #workspaceOpacity = "";
+  #workspaceOpacityPriority = "";
   #active = true;
   #acceptingWorkflow = true;
 
@@ -111,6 +114,15 @@ class DocumentController {
     void chrome.runtime
       .sendMessage({ type: "get-blind-mode-status" })
       .then((response: unknown) => {
+        if (!this.#active || !this.#acceptingWorkflow) {
+          return;
+        }
+        if (
+          typeof response !== "object" || response === null ||
+          !("ok" in response) || response.ok !== true
+        ) {
+          throw new Error("Blind Mode status could not be confirmed");
+        }
         const blindMode =
           typeof response === "object" &&
           response !== null &&
@@ -171,7 +183,7 @@ class DocumentController {
     this.#active = false;
     this.#acceptingWorkflow = false;
     this.#cancelAttempt();
-    this.#guardAbort.abort();
+    this.#releaseGuardResources();
     chrome.runtime.onMessage.removeListener(this.#handleRuntimeMessage);
     this.#restoreWorkspace();
     this.#guard.remove();
@@ -203,11 +215,13 @@ class DocumentController {
 
     if (this.#isMessage(message, "prevent-new-work")) {
       this.#preventNewWork();
+      sendResponse({ stopped: true });
       return;
     }
 
     if (this.#isMessage(message, "neutralize-guarded-runtime")) {
       this.deactivate();
+      sendResponse({ neutralized: true });
     }
   };
 
@@ -313,6 +327,10 @@ class DocumentController {
     this.#workspace = candidates[0];
     this.#workspaceWasInert = this.#workspace.inert;
     this.#workspaceAriaHidden = this.#workspace.getAttribute("aria-hidden");
+    this.#workspaceOpacity = this.#workspace.style.getPropertyValue("opacity");
+    this.#workspaceOpacityPriority = this.#workspace.style.getPropertyPriority("opacity");
+    // Keep the surface invisible even if layout moves between Guard updates.
+    this.#workspace.style.setProperty("opacity", "0", "important");
     this.#workspace.inert = true;
     this.#workspace.setAttribute("aria-hidden", "true");
     this.#positionGuardOverWorkspace();
@@ -323,6 +341,7 @@ class DocumentController {
       capture: true,
       signal: this.#guardAbort.signal,
     });
+    this.#guardAnimationFrame = window.requestAnimationFrame(this.#trackWorkspaceGuard);
     this.#apply({
       type: "workspace-guard-established",
       occurredAtMs: performance.now(),
@@ -336,11 +355,30 @@ class DocumentController {
     }
 
     const bounds = this.#workspace.getBoundingClientRect();
-    this.#guard.style.inset = "auto";
-    this.#guard.style.left = `${bounds.left}px`;
-    this.#guard.style.top = `${bounds.top}px`;
-    this.#guard.style.width = `${bounds.width}px`;
-    this.#guard.style.height = `${bounds.height}px`;
+    // A detached or hidden boundary cannot safely locate the current surface.
+    const useViewport = !this.#workspace.isConnected || bounds.width <= 0 || bounds.height <= 0;
+    const placement = {
+      left: useViewport ? "0px" : `${bounds.left}px`,
+      top: useViewport ? "0px" : `${bounds.top}px`,
+      right: useViewport ? "0px" : "auto",
+      bottom: useViewport ? "0px" : "auto",
+      width: useViewport ? "" : `${bounds.width}px`,
+      height: useViewport ? "" : `${bounds.height}px`,
+    };
+    for (const [property, cssValue] of Object.entries(placement)) {
+      if (this.#guard.style.getPropertyValue(property) !== cssValue) {
+        this.#guard.style.setProperty(property, cssValue);
+      }
+    }
+  };
+
+  #trackWorkspaceGuard = (): void => {
+    if (!this.#active || this.#guardAbort.signal.aborted || !this.#guard.isConnected) {
+      return;
+    }
+    // Layout can change without a window resize or scroll event.
+    this.#positionGuardOverWorkspace();
+    this.#guardAnimationFrame = window.requestAnimationFrame(this.#trackWorkspaceGuard);
   };
 
   #startCountdown(ref: WorkflowRef, deadlineAtMs: number): void {
@@ -416,6 +454,12 @@ class DocumentController {
       return;
     }
 
+    if (event.target instanceof Node && this.#guard.contains(event.target)) {
+      // Preserve native Tab/Space button behavior without leaking page shortcuts.
+      event.stopImmediatePropagation();
+      return;
+    }
+
     if (this.#eventTargetsProtectedArea(event.target)) {
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -437,7 +481,7 @@ class DocumentController {
   };
 
   #eventTargetsProtectedArea(target: EventTarget | null): boolean {
-    if (!this.#workspace) {
+    if (!this.#workspace || !this.#workspace.isConnected) {
       return true;
     }
 
@@ -509,7 +553,7 @@ class DocumentController {
 
   #completeBypass(): void {
     this.#acceptingWorkflow = false;
-    this.#guardAbort.abort();
+    this.#releaseGuardResources();
     this.#restoreWorkspace();
     this.#guard.remove();
     this.#root.removeAttribute(GUARD_MOUNTED_MARKER);
@@ -522,12 +566,25 @@ class DocumentController {
     }
 
     this.#workspace.inert = this.#workspaceWasInert;
+    if (this.#workspaceOpacity === "") {
+      this.#workspace.style.removeProperty("opacity");
+    } else {
+      this.#workspace.style.setProperty("opacity", this.#workspaceOpacity, this.#workspaceOpacityPriority);
+    }
     if (this.#workspaceAriaHidden === null) {
       this.#workspace.removeAttribute("aria-hidden");
     } else {
       this.#workspace.setAttribute("aria-hidden", this.#workspaceAriaHidden);
     }
     this.#workspace = undefined;
+  }
+
+  #releaseGuardResources(): void {
+    this.#guardAbort.abort();
+    if (this.#guardAnimationFrame !== undefined) {
+      window.cancelAnimationFrame(this.#guardAnimationFrame);
+      this.#guardAnimationFrame = undefined;
+    }
   }
 
   #isCurrent(ref: WorkflowRef): boolean {

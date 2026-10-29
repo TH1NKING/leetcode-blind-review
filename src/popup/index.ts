@@ -23,7 +23,7 @@ function replaceText(element: HTMLElement, value: string): void {
 }
 
 function render(blindMode: ModeResponse["blindMode"]): void {
-  const enabled = blindMode === "on";
+  const enabled = blindMode !== "off";
   const transitioning = blindMode === "enabling" || blindMode === "disabling";
 
   replaceText(
@@ -39,22 +39,50 @@ function render(blindMode: ModeResponse["blindMode"]): void {
     "aria-label",
     enabled ? "关闭 Blind Mode" : "启用 Blind Mode",
   );
-  toggleButton.disabled = transitioning;
+  // A failed transition must retain an explicit way to retry disabling.
+  toggleButton.disabled = false;
   toggleButton.dataset.enabled = String(enabled);
 }
 
 async function sendModeMessage(message: unknown): Promise<ModeResponse> {
-  return chrome.runtime.sendMessage(message) as Promise<ModeResponse>;
+  const response: unknown = await chrome.runtime.sendMessage(message);
+  if (
+    typeof response !== "object" || response === null ||
+    !("ok" in response) || typeof response.ok !== "boolean" ||
+    !("blindMode" in response) ||
+    typeof response.blindMode !== "string" ||
+    !["off", "enabling", "on", "disabling"].includes(response.blindMode)
+  ) {
+    throw new Error("Blind Mode status is unavailable");
+  }
+  return response as ModeResponse;
+}
+
+let retryStatus = false;
+
+async function requestMode(message: unknown): Promise<void> {
+  toggleButton.disabled = true;
+  try {
+    const response = await sendModeMessage(message);
+    retryStatus = false;
+    render(response.blindMode);
+    if (!response.ok) {
+      replaceText(statusElement, "Blind Mode 操作未完成，请重试确认当前状态。");
+    }
+  } catch {
+    retryStatus = true;
+    replaceText(statusElement, "无法读取 Blind Mode 状态，请重试。");
+    replaceText(toggleButton, "重试读取 Blind Mode");
+    toggleButton.setAttribute("aria-label", "重试读取 Blind Mode");
+    toggleButton.disabled = false;
+  }
 }
 
 toggleButton.addEventListener("click", () => {
   const enabled = toggleButton.dataset.enabled === "true";
-  toggleButton.disabled = true;
-  void sendModeMessage({ type: "set-blind-mode", enabled: !enabled }).then(
-    (response) => render(response.blindMode),
-  );
+  void requestMode(retryStatus
+    ? { type: "get-blind-mode-status" }
+    : { type: "set-blind-mode", enabled: !enabled });
 });
 
-void sendModeMessage({ type: "get-blind-mode-status" }).then((response) => {
-  render(response.blindMode);
-});
+void requestMode({ type: "get-blind-mode-status" });

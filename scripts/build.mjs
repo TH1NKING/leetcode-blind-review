@@ -24,7 +24,7 @@ const sharedBuildOptions = {
   minify: false,
   platform: "browser",
   sourcemap: false,
-  target: "chrome102",
+  target: "chrome119",
 };
 
 await Promise.all([

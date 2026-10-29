@@ -125,21 +125,35 @@ async function waitForExtensionWorker(
 export async function createChromeHarness(
   options: ChromeHarnessOptions = {},
 ): Promise<ChromeHarness> {
-  const profileDirectory = await mkdtemp(
-    path.join(path.resolve(tmpdir()), PROFILE_PREFIX),
-  );
-  const packageDirectory = await mkdtemp(
-    path.join(path.resolve(tmpdir()), PACKAGE_PREFIX),
-  );
-  const packagedExtensionDirectory = path.join(packageDirectory, "extension");
-  await cp(EXTENSION_DIRECTORY, packagedExtensionDirectory, { recursive: true });
+  const chromePath = await resolveChromeStablePath();
   for (const file of options.omitExtensionFiles ?? []) {
     if (path.basename(file) !== file) {
       throw new Error("Extension omission must name one package-root file");
     }
-    await rm(path.join(packagedExtensionDirectory, file), { force: true });
   }
-  const chromePath = await resolveChromeStablePath();
+  const profileDirectory = await mkdtemp(
+    path.join(path.resolve(tmpdir()), PROFILE_PREFIX),
+  );
+  let packageDirectory: string;
+  try {
+    packageDirectory = await mkdtemp(path.join(path.resolve(tmpdir()), PACKAGE_PREFIX));
+  } catch (error) {
+    await rm(profileDirectory, { force: true, recursive: true });
+    throw error;
+  }
+  const packagedExtensionDirectory = path.join(packageDirectory, "extension");
+  try {
+    await cp(EXTENSION_DIRECTORY, packagedExtensionDirectory, { recursive: true });
+    for (const file of options.omitExtensionFiles ?? []) {
+      await rm(path.join(packagedExtensionDirectory, file), { force: true });
+    }
+  } catch (error) {
+    await Promise.all([
+      rm(profileDirectory, { force: true, recursive: true }),
+      rm(packageDirectory, { force: true, recursive: true }),
+    ]);
+    throw error;
+  }
   let activeBrowser: Browser | undefined;
 
   return {
